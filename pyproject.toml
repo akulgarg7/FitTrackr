@@ -6,5 +6,6 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "pandas>=3.0.6",
+    "sqlalchemy>=2.1.4",
     "streamlit>=1.65.0",
 ]
