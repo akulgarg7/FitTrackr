@@ -1,11 +1,16 @@
 [project]
-name = "fitness-tracker"
+name = "fittrackr"
 version = "0.1.0"
-description = "Add your description here"
+description = "A personal fitness tracker for logging workouts, monitoring weight and BMI, tracking daily steps, and recording calorie intake."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "pandas>=3.0.6",
+    "python-dotenv>=1.2.4",
     "sqlalchemy>=2.1.4",
     "streamlit>=1.65.0",
 ]
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13"]
+build-backend = "uv_build"
