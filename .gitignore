@@ -63,3 +63,10 @@ htmlcov/
 .DS_Store?
 Thumbs.db
 ehthumbs.db
+
+# Local FitTrackr databases
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.db-shm
+data/*.db-wal
