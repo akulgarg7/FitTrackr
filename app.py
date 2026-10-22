@@ -1,6 +1,14 @@
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
+from datetime import date
 
+import pandas as pd
+
+from fittrackr.services.weight import (
+    add_weight_entry,
+    get_weight_history,
+    update_weight_entry,
+)
 # Import models so SQLAlchemy registers all tables.
 from fittrackr import models as _models  # noqa: F401
 from fittrackr.calculations import (
@@ -44,6 +52,61 @@ def load_profile_data():
         profile = get_profile(session)
         latest_weight = get_latest_weight(session)
         return profile, latest_weight
+
+
+@st.dialog("Log Weight")
+def log_weight_dialog(
+    current_weight: float | None = None,
+) -> None:
+    """Display a dialog for recording a weight measurement."""
+
+    st.write("Record your weight and the date you measured it.")
+
+    with st.form("log_weight_form"):
+        weight_kg = st.number_input(
+            "Weight (kg)",
+            min_value=1.0,
+            max_value=500.0,
+            value=current_weight,
+            step=0.1,
+            format="%.1f",
+        )
+
+        measured_on = st.date_input(
+            "Measurement date",
+            value=date.today(),
+            max_value=date.today(),
+        )
+
+        submitted = st.form_submit_button(
+            "Save Weight",
+            type="primary",
+            width="stretch",
+        )
+
+    if not submitted:
+        return
+
+    try:
+        with get_session() as session:
+            add_weight_entry(
+                session,
+                weight_kg=weight_kg,
+                measured_on=measured_on,
+            )
+
+    except ValueError as exc:
+        st.error(str(exc))
+
+    except SQLAlchemyError as exc:
+        print(f"FitTrackr database error: {exc}")
+        st.error("Unable to save this measurement. Check the terminal.")
+
+    else:
+        st.session_state["weight_flash"] = (
+            "Weight measurement saved successfully!"
+        )
+        st.rerun()
 
 
 def render_profile_form(*, setup: bool) -> None:
@@ -268,6 +331,15 @@ def dashboard_page() -> None:
     st.subheader(f"Welcome back, {profile.name}!")
     st.caption("Your current fitness overview")
 
+    if st.button("＋ Log Weight", type="primary"):
+        log_weight_dialog(
+            current_weight=(
+                latest_weight.weight_kg
+                if latest_weight is not None
+                else None
+            )
+        )
+
     if latest_weight is None:
         st.warning("No weight measurement is available yet.")
         return
@@ -285,17 +357,32 @@ def dashboard_page() -> None:
         activity_level=profile.activity_level,
     )
 
+    
     weight_col, bmi_col, calories_col = st.columns(3)
 
-    weight_col.metric(
-        "Current Weight",
-        f"{latest_weight.weight_kg:.1f} kg",
-    )
-    bmi_col.metric("Current BMI", f"{bmi:.1f}")
-    calories_col.metric(
-        "Maintenance Estimate",
-        f"{maintenance_calories:,} kcal/day",
-    )
+    with weight_col:
+        st.metric(
+            "Current Weight",
+            f"{latest_weight.weight_kg:.1f} kg",
+        )
+
+        # A separate button provides navigation from the weight card.
+        if st.button(
+            "View Weight History",
+            key="open_weight_history",
+            width="stretch",
+        ):
+            st.switch_page(weight_history_nav_page)
+
+    with bmi_col:
+        st.metric("Current BMI", f"{bmi:.1f}")
+
+    with calories_col:
+        st.metric(
+            "Maintenance Estimate",
+            f"{maintenance_calories:,} kcal/day",
+        )
+
 
     st.caption(
         f"Latest weight measurement: "
@@ -305,6 +392,139 @@ def dashboard_page() -> None:
         "Maintenance calories are an estimate. "
         "More tracking features will be added as development continues."
     )
+
+
+
+def weight_history_page() -> None:
+    """Display weight history, a graph, and historical editing."""
+
+    st.title("Weight History")
+    st.caption("Track how your weight changes over time.")
+
+    with get_session() as session:
+        history = get_weight_history(session)
+
+    if not history:
+        st.info("No weight measurements have been recorded yet.")
+        return
+
+    # Sort chronologically for the graph.
+    chronological = sorted(
+        history,
+        key=lambda entry: (entry.measured_on, entry.id),
+    )
+
+    chart_data = pd.DataFrame(
+        {
+            "Date": [entry.measured_on for entry in chronological],
+            "Weight (kg)": [
+                entry.weight_kg for entry in chronological
+            ],
+        }
+    )
+
+    st.subheader("Weight Progress")
+    st.line_chart(
+        chart_data,
+        x="Date",
+        y="Weight (kg)",
+        x_label="Measurement date",
+        y_label="Weight (kg)",
+        width="stretch",
+    )
+
+    st.subheader("Recorded Measurements")
+
+    newest_first = sorted(
+        history,
+        key=lambda entry: (entry.measured_on, entry.id),
+        reverse=True,
+    )
+
+    records_df = pd.DataFrame(
+        [
+            {
+                "Date": entry.measured_on.strftime("%d %b %Y"),
+                "Weight (kg)": round(entry.weight_kg, 1),
+            }
+            for entry in newest_first
+        ]
+    )
+
+    st.dataframe(
+        records_df,
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.divider()
+    st.subheader("Correct a Measurement")
+    st.caption(
+        "Editing a record changes that measurement rather than adding "
+        "another entry."
+    )
+
+    entries_by_id = {entry.id: entry for entry in newest_first}
+
+    selected_id = st.selectbox(
+        "Select a measurement",
+        options=list(entries_by_id.keys()),
+        format_func=lambda entry_id: (
+            f"{entries_by_id[entry_id].measured_on:%d %b %Y}"
+            f" — {entries_by_id[entry_id].weight_kg:.1f} kg"
+        ),
+    )
+
+    selected_entry = entries_by_id[selected_id]
+
+    with st.form("edit_weight_entry_form"):
+        edited_weight = st.number_input(
+            "Correct weight (kg)",
+            min_value=1.0,
+            max_value=500.0,
+            value=float(selected_entry.weight_kg),
+            step=0.1,
+            format="%.1f",
+            key=f"edit_weight_{selected_id}",
+        )
+
+        edited_date = st.date_input(
+            "Correct measurement date",
+            value=selected_entry.measured_on,
+            max_value=date.today(),
+            key=f"edit_weight_date_{selected_id}",
+        )
+
+        submitted = st.form_submit_button(
+            "Save Correction",
+            type="primary",
+            width="stretch",
+        )
+
+    if not submitted:
+        return
+
+    try:
+        with get_session() as session:
+            update_weight_entry(
+                session,
+                entry_id=selected_id,
+                weight_kg=edited_weight,
+                measured_on=edited_date,
+            )
+
+    except ValueError as exc:
+        st.error(str(exc))
+
+    except SQLAlchemyError as exc:
+        print(f"FitTrackr database error: {exc}")
+        st.error("Unable to update the measurement. Check the terminal.")
+
+    else:
+        st.session_state["weight_flash"] = (
+            "Weight measurement updated successfully!"
+        )
+        st.rerun()
 
 
 # Decide which screens are available based on saved profile data.
@@ -319,6 +539,13 @@ dashboard_nav_page = st.Page(
     icon="🏠",
     url_path="dashboard",
     default=True,
+)
+
+weight_history_nav_page = st.Page(
+    weight_history_page,
+    title="Weight History",
+    icon="📈",
+    url_path="weight-history",
 )
 
 profile_settings_nav_page = st.Page(
@@ -340,6 +567,7 @@ profile_setup_nav_page = st.Page(
 if profile_exists:
     pages = [
         dashboard_nav_page,
+        weight_history_nav_page,
         profile_settings_nav_page,
     ]
 else:
@@ -370,7 +598,11 @@ if profile_exists:
 
 # Show the message following a successful save.
 flash_message = st.session_state.pop("profile_flash", None)
+
+if flash_message is None:
+    flash_message = st.session_state.pop("weight_flash", None)
+
 if flash_message:
     st.success(flash_message)
-
+    
 page.run()
