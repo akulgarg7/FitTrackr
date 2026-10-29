@@ -23,6 +23,10 @@ from fittrackr.services.profile import (
     update_profile,
 )
 
+from fittrackr.services.daily_logs import get_daily_log
+from fittrackr.services.calories import get_daily_calorie_total
+from fittrackr.ui.today import today_page
+
 
 st.set_page_config(
     page_title="FitTrackr",
@@ -127,6 +131,24 @@ def render_profile_form(*, setup: bool) -> None:
             "Update your personal details here. Your current BMI and "
             "maintenance-calorie estimate will update accordingly."
         )
+
+        if profile is not None and latest_weight is not None:
+            maintenance_calories = calculate_maintenance_calories(
+                age=profile.age,
+                gender=profile.gender,
+                height_cm=profile.height_cm,
+                weight_kg=latest_weight.weight_kg,
+                activity_level=profile.activity_level,
+            )
+
+            st.metric(
+                "Estimated Maintenance Calories",
+                f"{maintenance_calories:,} kcal/day",
+            )
+            st.caption(
+                "This is an estimate based on your current profile "
+                "and latest recorded weight."
+            )
 
     current_name = profile.name if profile else ""
     current_age = profile.age if profile else None
@@ -319,26 +341,25 @@ def profile_settings_page() -> None:
     render_profile_form(setup=False)
 
 
+
 def dashboard_page() -> None:
-    """Show the current profile metrics."""
+    """Show the current fitness summary."""
     profile, latest_weight = load_profile_data()
 
     if profile is None:
         st.warning("Please complete your profile setup first.")
-        st.rerun()
+        return
 
     st.title("FitTrackr")
     st.subheader(f"Welcome back, {profile.name}!")
     st.caption("Your current fitness overview")
 
-    if st.button("＋ Log Weight", type="primary"):
-        log_weight_dialog(
-            current_weight=(
-                latest_weight.weight_kg
-                if latest_weight is not None
-                else None
-            )
-        )
+    if st.button(
+        "Open Today",
+        type="primary",
+        key="open_today_page",
+    ):
+        st.switch_page(today_nav_page)
 
     if latest_weight is None:
         st.warning("No weight measurement is available yet.")
@@ -349,26 +370,24 @@ def dashboard_page() -> None:
         height_cm=profile.height_cm,
     )
 
-    maintenance_calories = calculate_maintenance_calories(
-        age=profile.age,
-        gender=profile.gender,
-        height_cm=profile.height_cm,
-        weight_kg=latest_weight.weight_kg,
-        activity_level=profile.activity_level,
-    )
+    with get_session() as session:
+        today_log = get_daily_log(session, date.today())
+        today_steps = (
+            today_log.steps if today_log is not None else None
+        )
+        today_calories = get_daily_calorie_total(
+            session, log_date=date.today()
+        )
 
-    
-    weight_col, bmi_col, calories_col = st.columns(3)
+    weight_col, bmi_col, steps_col, calories_col = st.columns(4)
 
     with weight_col:
         st.metric(
             "Current Weight",
             f"{latest_weight.weight_kg:.1f} kg",
         )
-
-        # A separate button provides navigation from the weight card.
         if st.button(
-            "View Weight History",
+            "Weight History",
             key="open_weight_history",
             width="stretch",
         ):
@@ -377,20 +396,21 @@ def dashboard_page() -> None:
     with bmi_col:
         st.metric("Current BMI", f"{bmi:.1f}")
 
-    with calories_col:
+    with steps_col:
         st.metric(
-            "Maintenance Estimate",
-            f"{maintenance_calories:,} kcal/day",
+            "Today's Steps",
+            f"{today_steps:,}" if today_steps is not None else "Not recorded",
         )
 
+    with calories_col:
+        st.metric("Today's Calories", f"{today_calories:,} kcal")
 
     st.caption(
         f"Latest weight measurement: "
         f"{latest_weight.measured_on:%d %b %Y}"
     )
     st.caption(
-        "Maintenance calories are an estimate. "
-        "More tracking features will be added as development continues."
+        "Maintenance-calorie estimates are available under Profile Settings."
     )
 
 
@@ -563,10 +583,18 @@ profile_setup_nav_page = st.Page(
     default=True,
 )
 
+today_nav_page = st.Page(
+    today_page,
+    title="Today",
+    icon="🗓️",
+    url_path="today",
+)
+
 # Only make the appropriate pages available for the current state.
 if profile_exists:
     pages = [
         dashboard_nav_page,
+        today_nav_page,
         weight_history_nav_page,
         profile_settings_nav_page,
     ]
@@ -597,12 +625,15 @@ if profile_exists:
             )
 
 # Show the message following a successful save.
-flash_message = st.session_state.pop("profile_flash", None)
-
-if flash_message is None:
-    flash_message = st.session_state.pop("weight_flash", None)
-
-if flash_message:
-    st.success(flash_message)
+for flash_key in (
+    "profile_flash",
+    "weight_flash",
+    "daily_flash",
+    "exercise_flash",
+    "calorie_flash",
+):
+    flash_message = st.session_state.pop(flash_key, None)
+    if flash_message:
+        st.success(flash_message)
     
 page.run()
